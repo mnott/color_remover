@@ -49,10 +49,12 @@ including PNG, JPG, and GIF.
 
 ## Options
 
+```
 -s, --search TEXT      Color to remove in R,G,B format (e.g., '255,0,0') or hex format (e.g., '#ff0000')
 -r, --replace TEXT     Color to replace with (default: white)
--b, --bw, --bw-only   Keep only black and white pixels
+-b, --bw, --bw-only    Keep only black and white pixels
 -t, --tolerance INT    Color matching tolerance (0-255, default: 30)
+```
 
 # Installation
 
