@@ -15,6 +15,7 @@ including PNG, JPG, and GIF.
 - Replace removed colors with custom colors
 - Support for multiple image formats (PNG, JPG, GIF)
 - Preserve transparency in images
+- Configurable color matching tolerance
 - Easy-to-use command line interface
 
 ## Usage Examples
@@ -26,20 +27,32 @@ including PNG, JPG, and GIF.
 
 2. Remove a specific color (supports both RGB and hex format):
    ```bash
-   python color_remover.py input.jpg output.jpg --target-color "255,0,0"
+   python color_remover.py input.jpg output.jpg -s "255,0,0"
    # or using hex format
-   python color_remover.py input.jpg output.jpg --target-color "#ff0000"
+   python color_remover.py input.jpg output.jpg -s "#ff0000"
    ```
 
 3. Replace with a custom color:
    ```bash
-   python color_remover.py input.gif output.gif --replacement-color "#00ff00"
+   python color_remover.py input.gif output.gif -s "#ff0000" -r "#00ff00"
    ```
 
 4. Keep only black and white pixels:
    ```bash
-   python color_remover.py input.png output.png --bw-only
+   python color_remover.py input.png output.png --bw
    ```
+
+5. Adjust color matching tolerance:
+   ```bash
+   python color_remover.py input.png output.png -s "#ff0000" -t 40
+   ```
+
+## Options
+
+-s, --search TEXT      Color to remove in R,G,B format (e.g., '255,0,0') or hex format (e.g., '#ff0000')
+-r, --replace TEXT     Color to replace with (default: white)
+-b, --bw, --bw-only   Keep only black and white pixels
+-t, --tolerance INT    Color matching tolerance (0-255, default: 30)
 
 # Installation
 
@@ -75,16 +88,39 @@ app = typer.Typer(
     epilog="To get help about the script, call it with the --help option."
 )
 
-def is_color_match(pixel: Tuple[int, ...], target_color: Tuple[int, ...]) -> bool:
-    """Check if a pixel matches a target color, handling both RGB and RGBA."""
-    return pixel[:3] == target_color[:3]
+def is_color_match(pixel: Tuple[int, ...], target_color: Tuple[int, ...], tolerance: int = 30) -> bool:
+    """
+    Check if a pixel matches a target color, handling both RGB and RGBA with tolerance.
+    Uses a combination of individual channel differences and overall color similarity.
+    """
+    pixel_rgb = pixel[:3]
+    target_rgb = target_color[:3]
+
+    # Calculate differences for each channel
+    r_diff = abs(pixel_rgb[0] - target_rgb[0])
+    g_diff = abs(pixel_rgb[1] - target_rgb[1])
+    b_diff = abs(pixel_rgb[2] - target_rgb[2])
+
+    # Calculate overall color difference (Euclidean distance)
+    color_distance = (r_diff ** 2 + g_diff ** 2 + b_diff ** 2) ** 0.5
+
+    # Use a combination of:
+    # 1. Maximum individual channel difference
+    max_channel_diff = max(r_diff, g_diff, b_diff)
+
+    # 2. Overall color difference
+    # Scale tolerance for Euclidean distance since it's naturally larger
+    distance_tolerance = tolerance * 2.5
+
+    return (max_channel_diff <= tolerance) or (color_distance <= distance_tolerance)
 
 def process_image(
     input_path: str,
     output_path: str,
     target_color: Optional[Tuple[int, int, int]] = None,
     replacement_color: Tuple[int, int, int] = (255, 255, 255),
-    keep_only_bw: bool = False
+    keep_only_bw: bool = False,
+    tolerance: int = 30
 ) -> None:
     """
     Process an image by removing/replacing colors.
@@ -95,6 +131,7 @@ def process_image(
         target_color: Specific color to remove (if None and keep_only_bw is False, removes all colors)
         replacement_color: Color to use for replacement
         keep_only_bw: If True, keeps only black and white pixels
+        tolerance: How much each RGB component can differ (default: 30)
     """
     # Get file extension
     _, ext = os.path.splitext(input_path.lower())
@@ -104,7 +141,7 @@ def process_image(
             frames = []
             for frame in ImageSequence.Iterator(im):
                 processed_frame = process_single_frame(
-                    frame, target_color, replacement_color, keep_only_bw
+                    frame, target_color, replacement_color, keep_only_bw, tolerance
                 )
                 frames.append(processed_frame)
 
@@ -120,7 +157,7 @@ def process_image(
         else:
             # Process single image
             processed_image = process_single_frame(
-                im, target_color, replacement_color, keep_only_bw
+                im, target_color, replacement_color, keep_only_bw, tolerance
             )
             processed_image.save(output_path)
 
@@ -128,58 +165,55 @@ def process_single_frame(
     image: Image.Image,
     target_color: Optional[Tuple[int, int, int]],
     replacement_color: Tuple[int, int, int],
-    keep_only_bw: bool
+    keep_only_bw: bool,
+    tolerance: int = 30
 ) -> Image.Image:
     """Process a single image or frame."""
-    # Convert to RGBA for consistent processing
-    frame_rgba = image.convert("RGBA")
-    pixels = frame_rgba.getdata()
-    new_pixels = []
+    # Convert to RGB mode and ensure no color profile transformations
+    frame_rgb = image.convert("RGB")
+    frame_rgba = Image.new('RGBA', frame_rgb.size)
+    pixels = frame_rgb.load()
+    width, height = frame_rgb.size
 
-    for px in pixels:
-        if keep_only_bw:
-            # Keep only black or white pixels
-            if (px[0], px[1], px[2]) in [(0, 0, 0), (255, 255, 255)]:
-                new_pixels.append(px)
+    for y in range(height):
+        for x in range(width):
+            px = pixels[x, y]
+            if target_color is not None:
+                if is_color_match(px, target_color, tolerance):
+                    frame_rgba.putpixel((x, y), (*replacement_color, 255))
+                else:
+                    frame_rgba.putpixel((x, y), (*px, 255))
+            elif keep_only_bw:
+                # Use tolerance for black and white detection
+                is_black = all(abs(c - 0) <= tolerance for c in px[:3])
+                is_white = all(abs(c - 255) <= tolerance for c in px[:3])
+                if is_black or is_white:
+                    frame_rgba.putpixel((x, y), (*px, 255))
+                else:
+                    frame_rgba.putpixel((x, y), (*replacement_color, 255))
             else:
-                new_pixels.append((*replacement_color, px[3]))
-        elif target_color is not None:
-            # Remove specific color
-            if is_color_match(px, target_color):
-                new_pixels.append((*replacement_color, px[3]))
-            else:
-                new_pixels.append(px)
-        else:
-            # Remove all colors except black and white
-            if (px[0], px[1], px[2]) in [(0, 0, 0), (255, 255, 255)]:
-                new_pixels.append(px)
-            else:
-                new_pixels.append((*replacement_color, px[3]))
+                # Remove all colors except black and white, with tolerance
+                is_black = all(abs(c - 0) <= tolerance for c in px[:3])
+                is_white = all(abs(c - 255) <= tolerance for c in px[:3])
+                if is_black or is_white:
+                    frame_rgba.putpixel((x, y), (*px, 255))
+                else:
+                    frame_rgba.putpixel((x, y), (*replacement_color, 255))
 
-    frame_rgba.putdata(new_pixels)
     return frame_rgba
 
 def parse_color(color_str: str) -> Tuple[int, int, int]:
-    """
-    Parse a color string in either RGB format ('255,0,0') or hex format ('#RRGGBB').
+    """Parse a color string in either RGB format ('255,0,0') or hex format ('#RRGGBB')."""
+    if not color_str:
+        return None
 
-    Args:
-        color_str: Color string in either 'R,G,B' or '#RRGGBB' format
-
-    Returns:
-        Tuple of (R, G, B) values
-
-    Raises:
-        ValueError: If the color string format is invalid
-    """
     color_str = color_str.strip()
 
     # Handle hex format
     if color_str.startswith('#'):
-        if len(color_str) != 7:  # #RRGGBB format should be 7 chars
+        if len(color_str) != 7:
             raise ValueError("Hex color must be in #RRGGBB format")
         try:
-            # Convert hex to RGB
             r = int(color_str[1:3], 16)
             g = int(color_str[3:5], 16)
             b = int(color_str[5:7], 16)
@@ -206,22 +240,31 @@ def main(
     output_file: str = typer.Argument(..., help="Output image file"),
     target_color: Optional[str] = typer.Option(
         None,
-        "--target-color", "-t",
+        "--search", "-s",
         help="Color to remove in R,G,B format (e.g., '255,0,0') or hex format (e.g., '#ff0000')"
     ),
     replacement_color: str = typer.Option(
         "255,255,255",
-        "--replacement-color", "-r",
+        "--replace", "-r",
         help="Color to replace with in R,G,B format (e.g., '255,0,0') or hex format (e.g., '#ff0000')"
     ),
     keep_only_bw: bool = typer.Option(
         False,
-        "--bw-only", "-b",
+        "--bw-only", "-b", "--bw",
         help="Keep only black and white pixels, remove all other colors"
+    ),
+    tolerance: int = typer.Option(
+        30,
+        "--tolerance", "-t",
+        help="Color matching tolerance (0-255, default: 30)"
     )
 ):
     """Process an image by removing or replacing colors."""
     try:
+        # Validate tolerance
+        if not 0 <= tolerance <= 255:
+            raise ValueError("Tolerance must be between 0 and 255")
+
         # Parse colors from string to tuples
         replacement_rgb = parse_color(replacement_color)
         target_rgb = parse_color(target_color) if target_color else None
@@ -237,7 +280,8 @@ def main(
             output_file,
             target_rgb,
             replacement_rgb,
-            keep_only_bw
+            keep_only_bw,
+            tolerance
         )
 
         console.print(f"[green]Successfully processed image and saved to '{output_file}'[/green]")
