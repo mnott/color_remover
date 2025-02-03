@@ -1,8 +1,8 @@
 # Color Remover Tool
 
-# Color Remover Tool
+# Introduction
 
-A powerful command-line tool for manipulating colors in images. This tool provides functionality
+This is a command-line tool for manipulating colors in images. This tool provides functionality
 to process images by removing or replacing colors, with support for multiple image formats
 including PNG, JPG, and GIF.
 
